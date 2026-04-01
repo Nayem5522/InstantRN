@@ -1,24 +1,38 @@
-import os
-import re
 import asyncio
-from pyrogram import Client, filters, enums
+import os
+
+# পাইগ্রাম ইমপোর্ট করার আগেই একটি ইভেন্ট লুপ সেট করে দেওয়া
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# এবার পাইগ্রাম ইমপোর্ট করুন
+from pyrogram import Client, filters, enums, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import UserNotParticipant
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
-# --- CONFIGURATION ---
+# --- বাকি কনফিগারেশন আগের মতোই থাকবে ---
 API_ID = int(os.environ.get("API_ID", "12345"))
 API_HASH = os.environ.get("API_HASH", "your_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_token")
 MONGO_URL = os.environ.get("MONGO_URL", "your_mongodb_url")
 AUTH_CHANNELS = [int(ch) for ch in os.environ.get("AUTH_CHANNEL", "").split() if ch.startswith("-100")]
 
+app = Client("PrimeInstantBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# --- আপনার আগের সব ফাংশন (get_user, is_subscribed, etc.) এখানে থাকবে ---
+
+
+
 db_client = AsyncIOMotorClient(MONGO_URL)
 db = db_client["PrimeXBots_Thumb"]
 users_col = db["users"]
 
-app = Client("PrimeInstantBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+#app = Client("PrimeInstantBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # --- UTILS & DB FUNCTIONS ---
 async def get_user(user_id):
@@ -204,7 +218,7 @@ async def cb_logic(client, query: CallbackQuery):
         u = await get_user(u_id)
         await client.send_video(u_id, video=u["v_history"][idx], caption="Your previous video.")
 
-# --- WEB SERVER FOR PORT 8080 ---
+# --- ওয়েব সার্ভার ও মেইন স্টার্টআপ ---
 async def web_server():
     async def handle(request):
         return web.Response(text="Prime SnapThumb Bot is Online! Powered by @PrimeXBots")
@@ -215,30 +229,19 @@ async def web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
-    print("✅ Web Server started on port 8080")
 
-# --- MAIN STARTUP LOGIC ---
-async def start_services():
-    # ১. ওয়েব সার্ভার চালু করা (Health Check এর জন্য)
+async def main():
+    # ওয়েব সার্ভার চালু
     await web_server()
-    
-    # ২. পাইগ্রাম ক্লায়েন্ট বা বট চালু করা
+    # বট চালু
     await app.start()
-    print("🚀 Prime SnapThumb Bot is Online!")
-    
-    # ৩. বটকে রানিং অবস্থায় রাখা (idle রাখা)
-    from pyrogram import idle
+    print("🚀 Prime SnapThumb Bot Started Successfully!")
+    # বটকে সচল রাখা
     await idle()
-    
-    # ৪. বট বন্ধ করার সময় ক্লিনআপ
+    # বন্ধ করার সময়
     await app.stop()
 
 if __name__ == "__main__":
-    try:
-        # সরাসরি asyncio.run ব্যবহার করলে ইভেন্ট লুপের সমস্যা হবে না
-        asyncio.run(start_services())
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        print(f"❌ Error occurred: {e}")
-        
+    # সরাসরি মেইন ফাংশন রান করা
+    asyncio.get_event_loop().run_until_complete(main())
+    
