@@ -1,190 +1,223 @@
 import os
+import re
 import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import UserNotParticipant
 from motor.motor_asyncio import AsyncIOMotorClient
+from aiohttp import web
 
 # --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", "12345"))
 API_HASH = os.environ.get("API_HASH", "your_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_token")
 MONGO_URL = os.environ.get("MONGO_URL", "your_mongodb_url")
+AUTH_CHANNELS = [int(ch) for ch in os.environ.get("AUTH_CHANNEL", "").split() if ch.startswith("-100")]
 
-# --- DATABASE SETUP ---
 db_client = AsyncIOMotorClient(MONGO_URL)
-db = db_client["ThumbnailBot"]
+db = db_client["PrimeXBots_Thumb"]
 users_col = db["users"]
 
-app = Client("InstantThumbBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("PrimeInstantBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- DATABASE FUNCTIONS ---
-async def get_user_data(user_id):
+# --- UTILS & DB FUNCTIONS ---
+async def get_user(user_id):
     user = await users_col.find_one({"_id": user_id})
     if not user:
-        user = {
-            "_id": user_id,
-            "caption": " {filename}",
-            "current_thumb": None,
-            "thumb_history": [],
-            "video_history": []
-        }
+        user = {"_id": user_id, "caption": "{filename}", "thumb": None, "t_history": [], "v_history": []}
         await users_col.insert_one(user)
     return user
 
-async def update_user(user_id, data):
-    await users_col.update_one({"_id": user_id}, {"$set": data})
+async def is_subscribed(client, user_id):
+    if not AUTH_CHANNELS:
+        return True
+    for chat_id in AUTH_CHANNELS:
+        try:
+            await client.get_chat_member(chat_id, user_id)
+        except UserNotParticipant:
+            return False
+        except Exception:
+            continue
+    return True
 
-# --- START MESSAGE ---
-@app.on_message(filters.command("start"))
-async def start_cmd(client, message):
-    await get_user_data(message.from_user.id)
-    text = (
-        "<b>Welcome to Instant Thumbnail Changer!</b>\n\n"
-        "I can change your video thumbnail and caption instantly without downloading. "
-        "Just send a photo to set it as a thumbnail, then send your video.\n\n"
-        "Powered by @PrimeXBots"
-    )
-    buttons = [
-        [InlineKeyboardButton("How to Use ❓", callback_data="help")],
-        [InlineKeyboardButton("Help 💡", callback_data="help"), 
-         InlineKeyboardButton("About ℹ️", callback_data="about")],
-        [InlineKeyboardButton("Update Channel 📢", url="https://t.me/PrimeXBots"),
-         InlineKeyboardButton("Support Group 👥", url="https://t.me/PrimeXBots")],
+async def get_fsub_buttons(client):
+    buttons = []
+    for chat_id in AUTH_CHANNELS:
+        try:
+            chat = await client.get_chat(chat_id)
+            buttons.append([InlineKeyboardButton(f"✇ Join {chat.title} ✇", url=chat.invite_link)])
+        except: continue
+    buttons.append([InlineKeyboardButton("♻️ Refresh ♻️", callback_data="refresh_sub")])
+    return InlineKeyboardMarkup(buttons)
+
+# --- START MENU ---
+def get_start_buttons():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("How to Use ❓", callback_data="help_ui")],
+        [InlineKeyboardButton("Help 💡", callback_data="help_ui"), InlineKeyboardButton("About ℹ️", callback_data="about_ui")],
+        [InlineKeyboardButton("Update Channel 📢", url="https://t.me/PrimeXBots"), InlineKeyboardButton("Support Group 👥", url="https://t.me/PrimeXBots")],
         [InlineKeyboardButton("Creator 👨‍💻", url="https://t.me/PrimeXBots")]
-    ]
-    # You can add a pic URL here
+    ])
+
+@app.on_message(filters.command("start"))
+async def start_handler(client, message):
+    user_id = message.from_user.id
+    if not await is_subscribed(client, user_id):
+        return await message.reply_photo(
+            photo="https://i.postimg.cc/xdkd1h4m/IMG-20250715-153124-952.jpg",
+            caption=f"👋 Hello {message.from_user.mention},\n\nYou must join our updates channel to use me. After joining, click the Refresh button.",
+            reply_markup=await get_fsub_buttons(client)
+        )
+    
+    await get_user(user_id)
     await message.reply_photo(
-        photo="https://telegra.ph/file/your_image_id.jpg", # Replace with actual image link
-        caption=text,
-        reply_markup=InlineKeyboardMarkup(buttons)
+        photo="https://i.postimg.cc/xdkd1h4m/IMG-20250715-153124-952.jpg",
+        caption=f"**Welcome to Instant Thumbnail Changer!**\n\nInstantly update video thumbnails and captions without any downloading. Powered by @PrimeXBots.",
+        reply_markup=get_start_buttons()
     )
 
-# --- SET CAPTION ---
+# --- CAPTION & THUMBNAIL ---
 @app.on_message(filters.command("set_caption"))
 async def set_cap(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage: `/set_caption My Video {filename} @PrimeXBots`")
-    
-    new_caption = message.text.split(None, 1)[1]
-    await update_user(message.from_user.id, {"caption": new_caption})
-    await message.reply_text(f"✅ **Custom Caption Saved:**\n`{new_caption}`")
+        return await message.reply_text("Usage: `/set_caption My Name {filename} @PrimeXBots`")
+    new_cap = message.text.split(None, 1)[1]
+    await users_col.update_one({"_id": message.from_user.id}, {"$set": {"caption": new_cap}})
+    await message.reply_text(f"✅ **Caption set to:**\n`{new_cap}`")
 
-# --- SAVE THUMBNAIL ---
 @app.on_message(filters.photo)
-async def save_thumbnail(client, message):
-    user_id = message.from_user.id
+async def save_thumb(client, message):
     file_id = message.photo.file_id
-    
-    user = await get_user_data(user_id)
-    history = user.get("thumb_history", [])
-    history.insert(0, file_id) # Add to start of list
-    
-    # Keep only last 10 for history
-    await update_user(user_id, {
-        "current_thumb": file_id,
-        "thumb_history": history[:10]
-    })
-    await message.reply_text("✅ **Thumbnail Set Successfully!**\nNow send a video.")
+    user = await get_user(message.from_user.id)
+    history = user.get("t_history", [])
+    history.insert(0, file_id)
+    await users_col.update_one({"_id": message.from_user.id}, {"$set": {"thumb": file_id, "t_history": history[:10]}})
+    await message.reply_text("✅ **Thumbnail saved instantly!**")
 
-# --- VIDEO PROCESSING ---
+# --- VIDEO HANDLER ---
 @app.on_message(filters.video | filters.document)
-async def process_video(client, message):
-    user_id = message.from_user.id
-    user = await get_user_data(user_id)
+async def video_handler(client, message):
+    user = await get_user(message.from_user.id)
+    if not user["thumb"]:
+        return await message.reply_text("❌ Send a photo first!")
     
-    if not user["current_thumb"]:
-        return await message.reply_text("❌ Please send a photo first to set a thumbnail!")
-
-    status = await message.reply_text("⚡ **Processing Instantly...**")
-    
-    # Handle File Name logic
+    status = await message.reply_text("⚡ Processing...")
     file_obj = message.video or message.document
-    file_name = getattr(file_obj, 'file_name', 'video.mp4')
+    f_name = getattr(file_obj, 'file_name', 'video.mp4')
+    caption = user["caption"].replace("{filename}", f_name)
     
-    # Format Caption
-    final_caption = user["caption"].replace("{filename}", file_name)
-    
-    # Download thumb locally for sending (Pyrogram needs path/bio for thumb)
-    thumb_path = await client.download_media(user["current_thumb"])
-    
-    try:
-        # Save to video history
-        v_history = user.get("video_history", [])
-        v_history.insert(0, file_obj.file_id)
-        await update_user(user_id, {"video_history": v_history[:10]})
+    # Instant re-send using file_id and thumb
+    await client.send_video(
+        chat_id=message.chat.id,
+        video=file_obj.file_id,
+        thumb=await client.download_media(user["thumb"]),
+        caption=caption,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Permanent Rename?", url="https://t.me/Prime_Fast_Renamer_Bot")]])
+    )
+    # History Update
+    v_hist = user.get("v_history", [])
+    v_hist.insert(0, file_obj.file_id)
+    await users_col.update_one({"_id": message.from_user.id}, {"$set": {"v_history": v_hist[:10]}})
+    await status.delete()
 
-        # Instant Send with Blur (has_spoiler)
-        await client.send_video(
-            chat_id=message.chat.id,
-            video=file_obj.file_id,
-            thumb=thumb_path,
-            caption=final_caption,
-            has_spoiler=True, # The "Blur" effect
+# --- HISTORY ---
+@app.on_message(filters.command("history"))
+async def hist_cmd(client, message):
+    btns = [[InlineKeyboardButton("Show Thumbnails 🖼", callback_data="h_t"), InlineKeyboardButton("Show Videos 📹", callback_data="h_v")]]
+    await message.reply_text("Check your recent history (Last 10 items):", reply_markup=InlineKeyboardMarkup(btns))
+
+# --- CALLBACKS ---
+@app.on_callback_query()
+async def cb_logic(client, query: CallbackQuery):
+    u_id = query.from_user.id
+    data = query.data
+
+    if data == "refresh_sub":
+        if await is_subscribed(client, u_id):
+            await query.answer("Thank you for joining! You can use the bot now.", show_alert=True)
+            await query.message.delete()
+            # Redirect to start
+            await start_handler(client, query.message)
+        else:
+            await query.answer("⚠️ Warning: You haven't joined yet! Please join all channels.", show_alert=True)
+
+    elif data == "help_ui":
+        help_text = (
+            "**How to Use:**\n"
+            "1. Send a photo to set as thumbnail.\n"
+            "2. Set custom caption with `/set_caption {filename} @PrimeXBots`.\n"
+            "3. Send your video for instant processing.\n\n"
+            "For permanent rename and blur, use: ||@Prime_Fast_Renamer_Bot||"
+        )
+        await query.message.edit_caption(caption=help_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_home")]]))
+
+    elif data == "about_ui":
+        about_text = "This bot is a premium tool by @PrimeXBots to manage thumbnails instantly."
+        btns = [[InlineKeyboardButton("Source Code 🔗", callback_data="source_prime")], [InlineKeyboardButton("Back", callback_data="back_home")]]
+        await query.message.edit_caption(caption=about_text, reply_markup=InlineKeyboardMarkup(btns))
+
+    elif data == "source_prime":
+        await query.message.delete()
+        await client.send_photo(
+            chat_id=query.message.chat.id,
+            photo="https://i.postimg.cc/hvFZ93Ct/file-000000004188623081269b2440872960.png",
+            caption=(
+                f"👋 Hello Dear 👋,\n\n"
+                "⚠️ **THIS BOT IS A PRIVATE SOURCE PROJECT**\n\n"
+                "This bot has latest and advanced features⚡️\n"
+                "▸ If you want source code or like this bot contact me..!\n"
+                "▸ I will create a bot for you or source code\n"
+                "⇒ Contact Me - ♚ ADMIN ♚"
+            ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Permanent Rename? Try This Bot", url="https://t.me/Prime_Fast_Renamer_Bot")]
+                [InlineKeyboardButton("♚ ADMIN ♚", url="https://t.me/Prime_Admin_Support_ProBot")],
+                [InlineKeyboardButton("• CLOSE •", callback_data="closes")]
             ])
         )
-        await status.delete()
-    except Exception as e:
-        await status.edit(f"Error: {e}")
-    finally:
-        if os.path.exists(thumb_path):
-            os.remove(thumb_path)
 
-# --- HISTORY COMMAND ---
-@app.on_message(filters.command("history"))
-async def history_cmd(client, message):
-    buttons = [
-        [InlineKeyboardButton("Show Thumbnails 🖼", callback_data="hist_thumb")],
-        [InlineKeyboardButton("Show Videos 📹", callback_data="hist_video")]
-    ]
-    await message.reply_text("Select what you want to see from history:", reply_markup=InlineKeyboardMarkup(buttons))
+    elif data == "back_home":
+        await query.message.delete()
+        await start_handler(client, query.message)
 
-# --- CALLBACK HANDLERS ---
-@app.on_callback_query()
-async def cb_handler(client, query: CallbackQuery):
-    user_id = query.from_user.id
-    data = query.data
-    user = await get_user_data(user_id)
+    elif data == "closes":
+        await query.message.delete()
 
-    if data == "help":
-        await query.message.edit_caption(
-            "**How to use:**\n1. Send a photo to set it as thumbnail.\n"
-            "2. Set caption using `/set_caption My File {filename}`.\n"
-            "3. Send your video.\n\nAll actions are instant! @PrimeXBots",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_start")]])
-        )
+    elif data == "h_t":
+        u = await get_user(u_id)
+        if not u["t_history"]: return await query.answer("Empty!", show_alert=True)
+        btns = [[InlineKeyboardButton(f"Thumbnail {i+1}", callback_data=f"v_t_{i}")] for i in range(len(u["t_history"]))]
+        await query.message.edit_text("Recent Thumbnails:", reply_markup=InlineKeyboardMarkup(btns))
+
+    elif data.startswith("v_t_"):
+        idx = int(data.split("_")[2])
+        u = await get_user(u_id)
+        await client.send_photo(u_id, photo=u["t_history"][idx], caption="Your previous thumbnail.")
+
+    elif data == "h_v":
+        u = await get_user(u_id)
+        if not u["v_history"]: return await query.answer("Empty!", show_alert=True)
+        btns = [[InlineKeyboardButton(f"Video {i+1}", callback_data=f"v_v_{i}")] for i in range(len(u["v_history"]))]
+        await query.message.edit_text("Recent Videos:", reply_markup=InlineKeyboardMarkup(btns))
+
+    elif data.startswith("v_v_"):
+        idx = int(data.split("_")[2])
+        u = await get_user(u_id)
+        await client.send_video(u_id, video=u["v_history"][idx], caption="Your previous video.")
+
+async def web_server():
+    async def handle(request):
+        return web.Response(text="Bot is running! Powered by @PrimeXBots")
     
-    elif data == "back_start":
-        # Simplified back logic
-        await query.answer("Going Back...")
-        
-    elif data == "hist_thumb":
-        thumbs = user.get("thumb_history", [])
-        if not thumbs:
-            return await query.answer("No history found!", show_alert=True)
-        
-        btns = [[InlineKeyboardButton(f"Thumbnail {i+1}", callback_data=f"view_t_{i}")] for i in range(len(thumbs))]
-        await query.message.edit_text("Your recent thumbnails (Newest first):", reply_markup=InlineKeyboardMarkup(btns))
-
-    elif data.startswith("view_t_"):
-        idx = int(data.split("_")[2])
-        thumb_id = user["thumb_history"][idx]
-        await client.send_photo(user_id, photo=thumb_id, caption="Here is your previous thumbnail.")
-        await query.answer()
-
-    elif data == "hist_video":
-        videos = user.get("video_history", [])
-        if not videos:
-            return await query.answer("No history found!", show_alert=True)
-        
-        btns = [[InlineKeyboardButton(f"Video {i+1}", callback_data=f"view_v_{i}")] for i in range(len(videos))]
-        await query.message.edit_text("Your recent processed videos:", reply_markup=InlineKeyboardMarkup(btns))
-
-    elif data.startswith("view_v_"):
-        idx = int(data.split("_")[2])
-        video_id = user["video_history"][idx]
-        await client.send_video(user_id, video=video_id, caption="Here is your previous video.")
-        await query.answer()
-
-app.run()
+    app_web = web.Application()
+    app_web.router.add_get("/", handle)
+    runner = web.AppRunner(app_web)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
+    print("✅ Web Server started on port 8080 for health checks.")
+    
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.create_task(web_server()) # ওয়েব সার্ভার স্টার্ট করবে
+    print("🚀 Prime Thumbnail Bot is starting...")
+    app.run() 
