@@ -1,41 +1,39 @@
 import asyncio
 import os
 import re
-import time
 import aiohttp
 from aiohttp import web
 
-# --- CRITICAL FIX FOR PYTHON 3.12+ EVENT LOOP ---
+# --- CRITICAL: FIX EVENT LOOP FOR RENDER ---
 try:
     loop = asyncio.get_event_loop()
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-# Now import Pyrogram
 from pyrogram import Client, filters, enums, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import UserNotParticipant
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# --- CONFIG ---
+# --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", "12345"))
 API_HASH = os.environ.get("API_HASH", "your_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_token")
 MONGO_URL = os.environ.get("MONGO_URL", "your_mongo_url")
 AUTH_CHANNELS = [int(ch) for ch in os.environ.get("AUTH_CHANNEL", "").split() if ch.startswith("-100")]
 
-app = Client("PrimeSnapThumb", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("PrimeInstantBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 db_client = AsyncIOMotorClient(MONGO_URL)
 db = db_client["PrimeXBots"]
 users_col = db["users"]
 
-# --- FONT HELPER ---
+# --- FONT HELPER (ONLY FOR UI) ---
 def small_caps(text):
     mapping = {"a": "ᴀ", "b": "ʙ", "c": "ᴄ", "d": "ᴅ", "e": "ᴇ", "f": "ꜰ", "g": "ɢ", "h": "ʜ", "i": "ɪ", "j": "ᴊ", "k": "ᴋ", "l": "ʟ", "m": "ᴍ", "n": "ɴ", "o": "ᴏ", "p": "ᴘ", "q": "ǫ", "r": "ʀ", "s": "s", "t": "ᴛ", "u": "ᴜ", "v": "ᴠ", "w": "ᴡ", "x": "x", "y": "ʏ", "z": "ᴢ"}
     return "".join(mapping.get(c.lower(), c) for c in text)
 
-# --- DB UTILS ---
+# --- DB FUNCTIONS ---
 async def get_user(user_id):
     user = await users_col.find_one({"_id": user_id})
     if not user:
@@ -51,7 +49,7 @@ async def is_subscribed(client, user_id):
         except: continue
     return True
 
-# --- UI BUTTONS ---
+# --- START UI ---
 def get_start_buttons():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("〆 ʜᴇʟᴘ 〆", callback_data="help_ui"), InlineKeyboardButton("〆 ᴀʙᴏᴜᴛ 〆", callback_data="about_ui")],
@@ -60,7 +58,7 @@ def get_start_buttons():
     ])
 
 @app.on_message(filters.command("start"))
-async def start(client, message):
+async def start_cmd(client, message):
     user_id = message.from_user.id
     if not await is_subscribed(client, user_id):
         buttons = []
@@ -68,12 +66,12 @@ async def start(client, message):
             chat = await client.get_chat(chat_id)
             buttons.append([InlineKeyboardButton(f"✇ ᴊᴏɪɴ {chat.title} ✇", url=chat.invite_link)])
         buttons.append([InlineKeyboardButton("♻️ ʀᴇғʀᴇsʜ ♻️", callback_data="refresh_sub")])
-        return await message.reply_photo(photo="https://i.postimg.cc/xdkd1h4m/IMG-20250715-153124-952.jpg", caption=f"👋 ʜᴇʟʟᴏ {message.from_user.mention},\n\nɪꜰ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴜꜱᴇ ᴍᴇ, ʏᴏᴜ ᴍᴜꜱᴛ ꜰɪʀꜱᴛ ᴊᴏɪɴ ᴏᴜʀ ᴜᴘᴅᴀᴛᴇꜱ ᴄʜᴀɴɴᴇʟ.", reply_markup=InlineKeyboardMarkup(buttons))
+        return await message.reply_photo(photo="https://i.postimg.cc/xdkd1h4m/IMG-20250715-153124-952.jpg", caption=f"👋 **Hello {message.from_user.mention},**\n\nYou must join our updates channel to use me.", reply_markup=InlineKeyboardMarkup(buttons))
 
     await get_user(user_id)
     await message.reply_photo(photo="https://i.postimg.cc/xdkd1h4m/IMG-20250715-153124-952.jpg", caption=small_caps("welcome to prime snapthumb bot! update thumbnails instantly."), reply_markup=get_start_buttons())
 
-# --- SET CAPTION & THUMB ---
+# --- SETTINGS ---
 @app.on_message(filters.command("set_caption"))
 async def set_cap(client, message):
     if len(message.command) < 2: return await message.reply_text(small_caps("usage: /set_caption {filename} @PrimeXBots"))
@@ -82,7 +80,7 @@ async def set_cap(client, message):
     await message.reply_text(f"✅ **ᴄᴀᴘᴛɪᴏɴ sᴀᴠᴇᴅ:**\n`{new_cap}`")
 
 @app.on_message(filters.photo)
-async def thumb_save(client, message):
+async def save_thumb(client, message):
     file_id = message.photo.file_id
     user = await get_user(message.from_user.id)
     t_hist = user.get("t_history", [])
@@ -90,26 +88,28 @@ async def thumb_save(client, message):
     await users_col.update_one({"_id": message.from_user.id}, {"$set": {"thumb": file_id, "t_history": t_hist[:10]}})
     await message.reply_text(small_caps("✅ thumbnail saved instantly!"))
 
-# --- VIDEO PROCESS ---
+# --- VIDEO HANDLER ---
 @app.on_message(filters.video | filters.document)
-async def video_handler(client, message):
+async def handle_video(client, message):
     user = await get_user(message.from_user.id)
     if not user["thumb"]: return await message.reply_text(small_caps("❌ please send a photo first!"))
 
-    # Sticker Delay
+    # Processing Sticker
     sticker = await message.reply_sticker("CAACAgUAAxkBAAKGfGnNPmV4Bwsx_0W1Qk8h6p3Q423nAALbEAACdYaYVO2S9fNnW52THgQ")
     await asyncio.sleep(4)
     await sticker.delete()
 
     file_obj = message.video or message.document
     raw_name = getattr(file_obj, 'file_name', 'video.mp4')
-    # Clean Filename: Replace dots/underscores with space
+    # Clean name: Replace . and _ with space
     clean_name = os.path.splitext(raw_name)[0].replace("_", " ").replace(".", " ")
     
-    caption = user["caption"].replace("{filename}", clean_name)
-    status = await message.reply_text("⚡ **ᴘʀᴏᴄᴇssɪɴɢ...**")
+    # Custom Caption (No small_caps font here to keep links working)
+    final_caption = user["caption"].replace("{filename}", clean_name)
     
-    # Technical Fix: Download thumb first for reliable change
+    status = await message.reply_text(small_caps("⚡ processing instantly..."))
+    
+    # CRITICAL: Download thumb to force change
     thumb_path = await client.download_media(user["thumb"])
     
     try:
@@ -117,10 +117,10 @@ async def video_handler(client, message):
             chat_id=message.chat.id,
             video=file_obj.file_id,
             thumb=thumb_path,
-            caption=small_caps(caption),
+            caption=final_caption,
             supports_streaming=True
         )
-        # Add to history
+        # Update History
         v_hist = user.get("v_history", [])
         v_hist.insert(0, file_obj.file_id)
         await users_col.update_one({"_id": message.from_user.id}, {"$set": {"v_history": v_hist[:10]}})
@@ -130,28 +130,22 @@ async def video_handler(client, message):
     finally:
         if os.path.exists(thumb_path): os.remove(thumb_path)
 
-# --- HISTORY ---
-@app.on_message(filters.command("history"))
-async def history_cmd(client, message):
-    btns = [[InlineKeyboardButton("sʜᴏᴡ ᴛʜᴜᴍʙɴᴀɪʟs 🖼", callback_data="h_t"), InlineKeyboardButton("sʜᴏᴡ ᴠɪᴅᴇᴏs 📹", callback_data="h_v")]]
-    await message.reply_text(small_caps("your recent history (last 10 items):"), reply_markup=InlineKeyboardMarkup(btns))
-
 # --- CALLBACKS ---
 @app.on_callback_query()
 async def cb_handler(client, query: CallbackQuery):
     u_id = query.from_user.id
-    me = await client.get_me()
     data = query.data
+    me = await client.get_me()
 
     if data == "refresh_sub":
         if await is_subscribed(client, u_id):
             await query.answer("ᴛʜᴀɴᴋ ʏᴏᴜ ꜰᴏʀ ᴊᴏɪɴɪɴɢ!", show_alert=True)
             await query.message.delete()
-            await start(client, query.message)
+            await start_cmd(client, query.message)
         else: await query.answer("⚠️ ʏᴏᴜ ʜᴀᴠᴇɴ'ᴛ ᴊᴏɪɴᴇᴅ ʏᴇᴛ!", show_alert=True)
 
     elif data == "help_ui":
-        h_text = "**ʜᴏᴡ ᴛᴏ ᴜsᴇ:**\n1. Send a photo for thumbnail.\n2. Use /set_caption {filename}.\n3. Send video.\n\nPermanent Rename: ||@Prime_Fast_Renamer_Bot||"
+        h_text = "**ʜᴏᴡ ᴛᴏ ᴜsᴇ:**\n1. Send a photo.\n2. Set caption with /set_caption.\n3. Send video.\n\n||@Prime_Fast_Renamer_Bot||"
         await query.message.edit_caption(caption=small_caps(h_text), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_home")]]))
 
     elif data == "about_ui":
@@ -167,7 +161,7 @@ async def cb_handler(client, query: CallbackQuery):
             "‣ ʙᴏᴛ ꜱᴇʀᴠᴇʀ : <a href='https://render.com'>ʀᴇɴᴅᴇʀ</a>\n"
             "‣ ʙᴜɪʟᴅ ꜱᴛᴀᴛᴜꜱ : v2.7.1 [ꜱᴛᴀʙʟᴇ]\n"
         )
-        btns = [[InlineKeyboardButton("🧑‍💻 ꜱᴏᴜʀᴄᴇ ᴄoᴅᴇ 🧑‍💻", callback_data="source_prime")], [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_home")]]
+        btns = [[InlineKeyboardButton(small_caps("🧑‍💻 source code 🧑‍💻"), callback_data="source_prime")], [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="back_home")]]
         await query.message.edit_text(about_text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(btns))
 
     elif data == "source_prime":
@@ -178,7 +172,7 @@ async def cb_handler(client, query: CallbackQuery):
 
     elif data == "back_home":
         await query.message.delete()
-        await start(client, query.message)
+        await start_cmd(client, query.message)
 
     elif data == "closes": await query.message.delete()
 
@@ -206,10 +200,10 @@ async def cb_handler(client, query: CallbackQuery):
         await users_col.update_one({"_id": u_id}, {"$set": {"v_history": u["v_history"]}})
         await query.answer("Deleted!", show_alert=True); await query.message.delete()
 
-# --- WEB & PING ---
+# --- SERVER ---
 async def web_server():
     app_web = web.Application()
-    app_web.router.add_get("/", lambda r: web.Response(text="Prime SnapThumb Active"))
+    app_web.router.add_get("/", lambda r: web.Response(text="PrimeSnapThumb Active"))
     runner = web.AppRunner(app_web); await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", 8080).start()
 
