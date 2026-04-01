@@ -204,9 +204,10 @@ async def cb_logic(client, query: CallbackQuery):
         u = await get_user(u_id)
         await client.send_video(u_id, video=u["v_history"][idx], caption="Your previous video.")
 
+# --- WEB SERVER FOR PORT 8080 ---
 async def web_server():
     async def handle(request):
-        return web.Response(text="Bot is running! Powered by @PrimeXBots")
+        return web.Response(text="Prime SnapThumb Bot is Online! Powered by @PrimeXBots")
     
     app_web = web.Application()
     app_web.router.add_get("/", handle)
@@ -214,10 +215,30 @@ async def web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
-    print("✅ Web Server started on port 8080 for health checks.")
+    print("✅ Web Server started on port 8080")
+
+# --- MAIN STARTUP LOGIC ---
+async def start_services():
+    # ১. ওয়েব সার্ভার চালু করা (Health Check এর জন্য)
+    await web_server()
     
+    # ২. পাইগ্রাম ক্লায়েন্ট বা বট চালু করা
+    await app.start()
+    print("🚀 Prime SnapThumb Bot is Online!")
+    
+    # ৩. বটকে রানিং অবস্থায় রাখা (idle রাখা)
+    from pyrogram import idle
+    await idle()
+    
+    # ৪. বট বন্ধ করার সময় ক্লিনআপ
+    await app.stop()
+
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(web_server()) # ওয়েব সার্ভার স্টার্ট করবে
-    print("🚀 Prime Thumbnail Bot is starting...")
-    app.run() 
+    try:
+        # সরাসরি asyncio.run ব্যবহার করলে ইভেন্ট লুপের সমস্যা হবে না
+        asyncio.run(start_services())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"❌ Error occurred: {e}")
+        
